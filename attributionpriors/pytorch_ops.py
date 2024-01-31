@@ -101,7 +101,8 @@ class AttributionPriorExplainer(object):
         return sd
     
     def _get_grads(self, samples_input, model, sparse_labels=None):
-        samples_input.requires_grad = True
+        # samples_input.requires_grad = True
+        samples_input = samples_input.detach().clone().requires_grad_(True)
 
         # grad_tensor = torch.zeros(samples_input.shape).float().to(DEFAULT_DEVICE)
         
@@ -126,36 +127,35 @@ class AttributionPriorExplainer(object):
             # grad_tensor[:,i,:] = model_grads[0]
             
         
-        # Accomodate for multitask learning usecase
+       # Accomodate for multitask learning use cases
         
         # Get the number of tasks
-        temp_output = model(samples_input[:,0])
-        grad_tensors = []
-        batch_outputs = [model(samples_input[:,i]) for i in range(self.k)]
+        temp_output = model(samples_input[:,0])                
+        grad_tensors = [torch.zeros(samples_input.shape).float().to(DEFAULT_DEVICE) for _ in range(len(temp_output))]
         
         # For each task, do below
-        for idx in range(len(temp_output)):
-            grad_tensor = torch.zeros(samples_input.shape).float().to(DEFAULT_DEVICE)
-            for i in range(self.k):                
-                batch_output = batch_outputs[i][idx]
-                # should check that users pass in sparse labels
-                # Only look at the user-specified label
+        for i in range(self.k):
+            # Should store the input instead of getting the slice again
+            # Otherwise, the grad() cannot recognize the input
+            particular_slice = samples_input[:,i]
+            batch_outputs = model(particular_slice)
+            tasks_grads = []
+            for idx in range(len(batch_outputs)):
+                batch_output = batch_outputs[idx]
                 if batch_output.size(1) > 1:
                     sample_indices = torch.arange(0,batch_output.size(0)).to(DEFAULT_DEVICE)
                     indices_tensor = torch.cat([
                             sample_indices.unsqueeze(1), 
                             sparse_labels.unsqueeze(1)], dim=1)
                     batch_output = gather_nd(batch_output, indices_tensor)
-
+                
                 model_grads = grad(
                         outputs=batch_output,
-                        inputs=samples_input[:,i],
+                        inputs=particular_slice,
                         grad_outputs=torch.ones_like(batch_output).to(DEFAULT_DEVICE),
-                        create_graph=True,
-                        allow_unused=True,
-                        materialize_grads=True)
-                grad_tensor[:,i,:] = model_grads[0]
-            grad_tensors.append(grad_tensor)
+                        create_graph=True)
+                grad_tensors[idx][:,i,:] = model_grads[0]
+                
         return grad_tensors
            
     def shap_values(self, model, input_tensor, sparse_labels=None):
